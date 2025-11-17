@@ -16,17 +16,9 @@ class UltraTransparentAssistant:
         self.root.attributes('-alpha', self.current_alpha)
 
         # Прозрачный фон окна
-        self.root.configure(bg='#2b2b2b')
+        self.root.configure(bg='#1E1F22')
 
-        # Установка темного заголовка для Windows
-        try:
-            from ctypes import windll, byref, sizeof, c_int
-            # Получаем HWND окна
-            HWND = windll.user32.GetParent(root.winfo_id())
-            # Устанавливаем темный заголовок (DWMWA_USE_IMMERSIVE_DARK_MODE = 20)
-            windll.dwmapi.DwmSetWindowAttribute(HWND, 20, byref(c_int(1)), sizeof(c_int))
-        except:
-            pass  # Если не Windows, пропускаем
+        self.root.overrideredirect(True)
 
         self.client = OpenAI(
             api_key='sk-cfc4609bed994c85bc26d8c29d433030',
@@ -38,10 +30,10 @@ class UltraTransparentAssistant:
 
     def create_ui(self):
         # Минималистичные полупрозрачные цвета
-        dark_bg = '#2b2b2b'
-        card_bg = '#2b2b2b'
+        dark_bg = '#1E1F22'
+        card_bg = '#1E1F22'
         text_color = '#fffff3'
-        accent = '#2b2b2b'
+        accent = '#1E1F22'
 
         # Создаем кастомный заголовок
         self.title_bar = tk.Frame(self.root, bg=dark_bg, height=30)
@@ -100,16 +92,18 @@ class UltraTransparentAssistant:
         btn_frame.pack(fill=tk.X, pady=5)
 
         self.solve_btn = tk.Button(btn_frame,
-                                   text="Решить",
+                                   text="->",
                                    bg=accent,
                                    fg=text_color,
                                    font=('Arial', 8),
+                                   borderwidth=0,
                                    command=self.solve_problem)
         self.solve_btn.pack(side=tk.LEFT, padx=(0, 5))
 
         tk.Button(btn_frame,
-                  text="Очистить",
-                  bg='#555555',
+                  text="x",
+                  borderwidth=0,
+                  bg='#2b2b2b',
                   fg=text_color,
                   font=('Arial', 8),
                   command=self.clear_all).pack(side=tk.LEFT)
