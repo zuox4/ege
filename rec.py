@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import ttk, scrolledtext
 import threading
 import time
 import os
@@ -9,13 +9,14 @@ import numpy as np
 from datetime import datetime
 import requests
 import tempfile
+import json
 
 
 class ScreenRecorder:
     def __init__(self, root):
         self.root = root
         self.root.title("SHADOW RECORDER")
-        self.root.geometry("500x200")
+        self.root.geometry("350x450")  # Немного увеличил для чекбоксов
 
         # Настройки прозрачности
         self.current_alpha = 0.05
@@ -29,207 +30,399 @@ class ScreenRecorder:
         self.output_file = None
         self.start_time = None
 
-        # Настройки Telegram бота (ЗАМЕНИТЕ НА СВОИ!)
+        # Настройки Telegram бота
         self.bot_token = "6032408418:AAG_hIpCb1KuTrPoj05m828zLuc9YbFMos8"
-        self.chat_id = "411532169"
-        self.root.overrideredirect(True)
 
-        self.create_ui()
+        # Словарь пользователей: Имя -> chat_id
+        self.users_dict = {
+            "Найдюк Кирилл Константинович": "411532169",
+            "Гущин Алексей Генадьевич": "772810355",
+            "Серегина Екатерина Игоревна": "477524759",
+        }
+
+        # Выбранные пользователи (по умолчанию все)
+        self.selected_users = {name: True for name in self.users_dict.keys()}
+
+        # Для хранения сообщений
+        self.messages = []
+        self.last_update_id = 0
+        self.api_errors_count = 0
+        self.max_api_errors = 5
+
+        # Инициализация UI
+        self.create_compact_ui()
         self.setup_bindings()
 
-    def create_ui(self):
+        # Запуск получения сообщений
+        self.start_message_polling()
+
+    def create_compact_ui(self):
         # Цвета
         dark_bg = '#2b2b2b'
         text_color = '#fffff3'
 
-        # Создаем кастомный заголовок
-        self.title_bar = tk.Frame(self.root, bg=dark_bg, height=30)
-        self.title_bar.pack(fill=tk.X, side=tk.TOP)
-        self.title_bar.pack_propagate(False)
+        # Основной контейнер
+        main_frame = tk.Frame(self.root, bg=dark_bg)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Название программы в заголовке
-        title_label = tk.Label(self.title_bar,
-                               text="🎥 Screen Recorder",
-                               bg=dark_bg,
-                               fg=text_color,
-                               font=('Arial', 10, 'bold'))
-        title_label.pack(side=tk.LEFT, padx=10, pady=5)
+        # Верхняя панель с кнопками-значками
+        top_frame = tk.Frame(main_frame, bg=dark_bg, height=40)
+        top_frame.pack(fill=tk.X, pady=(0, 5))
+        top_frame.pack_propagate(False)
 
-        # Статус записи в заголовке
-        self.recording_status = tk.Label(self.title_bar,
-                                         text="⏹️ Не записывается",
-                                         bg=dark_bg,
-                                         fg='#ff5555',
-                                         font=('Arial', 8))
-        self.recording_status.pack(side=tk.RIGHT, padx=15, pady=5)
-
-        # Кнопки управления окном
-        controls_frame = tk.Frame(self.title_bar, bg=dark_bg)
-        controls_frame.pack(side=tk.RIGHT, padx=5)
-
-        minimize_btn = tk.Button(controls_frame,
-                                 text="─",
-                                 bg=dark_bg,
-                                 fg=text_color,
-                                 font=('Arial', 10),
-                                 borderwidth=0,
-                                 command=self.root.iconify)
-        minimize_btn.pack(side=tk.LEFT, padx=2)
-
-        close_btn = tk.Button(controls_frame,
-                              text="×",
-                              bg=dark_bg,
-                              fg=text_color,
-                              font=('Arial', 12),
-                              borderwidth=0,
-                              command=self.root.quit)
-        close_btn.pack(side=tk.LEFT, padx=2)
-
-        # Основное содержимое
-        main_frame = tk.Frame(self.root, bg=dark_bg, padx=20, pady=20)
-        main_frame.pack(fill=tk.BOTH, expand=True)
-
-        # Три основные кнопки
-        buttons_frame = tk.Frame(main_frame, bg=dark_bg)
-        buttons_frame.pack(fill=tk.X, pady=10)
-
-        # Кнопка начала записи
-        self.record_btn = tk.Button(buttons_frame,
-                                    text="🎥 Начать запись",
+        # Кнопка записи
+        self.record_btn = tk.Button(top_frame,
+                                    text="🔴",
                                     bg='#ff5555',
                                     fg=text_color,
-                                    font=('Arial', 12, 'bold'),
-                                    width=15,
-                                    height=2,
+                                    font=('Arial', 14),
+                                    width=3,
+                                    height=1,
+                                    relief='flat',
                                     command=self.start_recording)
-        self.record_btn.pack(side=tk.LEFT, padx=10)
+        self.record_btn.pack(side=tk.LEFT, padx=2)
 
-        # Кнопка остановки записи
-        self.stop_btn = tk.Button(buttons_frame,
-                                  text="⏹️ Остановить",
+        # Кнопка остановки
+        self.stop_btn = tk.Button(top_frame,
+                                  text="⏹️",
                                   bg='#555555',
                                   fg=text_color,
                                   font=('Arial', 12),
-                                  width=15,
-                                  height=2,
+                                  width=3,
+                                  height=1,
+                                  relief='flat',
                                   command=self.stop_recording,
                                   state='disabled')
-        self.stop_btn.pack(side=tk.LEFT, padx=10)
+        self.stop_btn.pack(side=tk.LEFT, padx=2)
 
-        # Кнопка отправки в Telegram
-        self.telegram_btn = tk.Button(buttons_frame,
-                                      text="📤 В Telegram",
+        # Кнопка отправки ВЫБРАННЫМ
+        self.telegram_btn = tk.Button(top_frame,
+                                      text="📤",
                                       bg='#555555',
                                       fg=text_color,
                                       font=('Arial', 12),
-                                      width=15,
-                                      height=2,
-                                      command=self.send_to_telegram,
+                                      width=3,
+                                      height=1,
+                                      relief='flat',
+                                      command=self.send_to_selected_users,
                                       state='disabled')
-        self.telegram_btn.pack(side=tk.LEFT, padx=10)
+        self.telegram_btn.pack(side=tk.LEFT, padx=2)
 
-        # Информация о записи
-        info_frame = tk.Frame(main_frame, bg=dark_bg)
-        info_frame.pack(fill=tk.X, pady=10)
 
-        # self.time_label = tk.Label(info_frame,
-        #                            text="Время записи: 00:00:00",
-        #                            bg=dark_bg,
-        #                            fg=text_color,
-        #                            font=('Arial', 10))
-        # self.time_label.pack(side=tk.LEFT)
-        #
-        # self.file_label = tk.Label(info_frame,
-        #                            text="Файл: -",
-        #                            bg=dark_bg,
-        #                            fg=text_color,
-        #                            font=('Arial', 10))
-        # self.file_label.pack(side=tk.RIGHT)
 
-        # # Статус прозрачности
-        # self.status = tk.Label(main_frame,
-        #                        text=f"Прозрачность: {int(self.current_alpha * 100)}% | F9 - запись",
-        #                        bg=dark_bg,
-        #                        fg='#888888',
-        #                        font=('Arial', 8))
-        # self.status.pack(fill=tk.X, pady=(10, 0))
 
-    def setup_bindings(self):
-        self.root.bind('<Control-plus>', lambda e: self.more_transparent())
-        self.root.bind('<Control-minus>', lambda e: self.less_transparent())
-        self.root.bind('<F9>', lambda e: self.toggle_recording())
+        # Кнопка прозрачности
+        self.alpha_btn = tk.Button(top_frame,
+                                   text="⚪",
+                                   bg='#555555',
+                                   fg=text_color,
+                                   font=('Arial', 12),
+                                   width=3,
+                                   height=1,
+                                   relief='flat',
+                                   command=self.toggle_transparency)
+        self.alpha_btn.pack(side=tk.LEFT, padx=2)
 
-        # Перетаскивание окна за заголовок
-        self.title_bar.bind('<Button-1>', self.start_move)
-        self.title_bar.bind('<B1-Motion>', self.on_move)
+        # Статус записи
+        self.status_label = tk.Label(top_frame,
+                                     text="⏹️",
+                                     bg=dark_bg,
+                                     fg='#ff5555',
+                                     font=('Arial', 10))
+        self.status_label.pack(side=tk.RIGHT, padx=5)
 
-    def start_move(self, event):
-        self.x = event.x
-        self.y = event.y
+        # Панель выбора пользователей
+        users_selector_frame = tk.Frame(main_frame, bg=dark_bg, height=60)
+        users_selector_frame.pack(fill=tk.X, pady=(0, 5))
+        users_selector_frame.pack_propagate(False)
 
-    def on_move(self, event):
-        deltax = event.x - self.x
-        deltay = event.y - self.y
-        x = self.root.winfo_x() + deltax
-        y = self.root.winfo_y() + deltay
-        self.root.geometry(f"+{x}+{y}")
+        # Заголовок выбора пользователей
+        selector_header = tk.Label(users_selector_frame,
+                                   text="👥 Выберите получателей:",
+                                   bg='#3a3a3a',
+                                   fg=text_color,
+                                   font=('Arial', 8, 'bold'))
+        selector_header.pack(fill=tk.X, pady=(2, 0))
 
-    def more_transparent(self):
-        if self.current_alpha > 0.05:
-            self.current_alpha -= 0.05
-            self.root.attributes('-alpha', self.current_alpha)
-            self.status.config(text=f"Прозрачность: {int(self.current_alpha * 100)}% | F9 - запись")
+        # Фрейм для чекбоксов пользователей
+        self.checkboxes_frame = tk.Frame(users_selector_frame, bg=dark_bg)
+        self.checkboxes_frame.pack(fill=tk.X, padx=5, pady=2)
 
-    def less_transparent(self):
-        if self.current_alpha < 1.0:
-            self.current_alpha += 0.05
-            self.root.attributes('-alpha', self.current_alpha)
-            self.status.config(text=f"Прозрачность: {int(self.current_alpha * 100)}% | F9 - запись")
+        # Создаем чекбоксы для пользователей
+        self.user_checkboxes = {}
+        self._create_user_checkboxes()
 
-    def toggle_recording(self):
-        if not self.recording:
-            self.start_recording()
-        else:
-            self.stop_recording()
+        # Чат
+        chat_frame = tk.Frame(main_frame, bg=dark_bg)
+        chat_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Заголовок чата
+        selected_count = sum(self.selected_users.values())
+        self.chat_header = tk.Label(chat_frame,
+                                    text=f"💬 Telegram Chat [👥{selected_count}/{len(self.users_dict)}]",
+                                    bg='#3a3a3a',
+                                    fg=text_color,
+                                    font=('Arial', 9, 'bold'))
+        self.chat_header.pack(fill=tk.X, pady=(0, 2))
+
+        # Область сообщений без видимого скролла
+        self.chat_display = tk.Text(chat_frame,
+                                    bg='#1a1a1a',
+                                    fg=text_color,
+                                    font=('Arial', 8),
+                                    width=30,
+                                    height=12,
+                                    relief='flat',
+                                    borderwidth=1,
+                                    wrap=tk.WORD,
+                                    padx=5,
+                                    pady=5)
+
+        # Создаем скроллбар но скрываем его
+        self.scrollbar = tk.Scrollbar(chat_frame,
+                                      orient=tk.VERTICAL,
+                                      command=self.chat_display.yview,
+                                      width=0)
+        self.chat_display.configure(yscrollcommand=self.scrollbar.set)
+
+        self.chat_display.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.scrollbar.configure(troughcolor='#1a1a1a',
+                                 bg='#1a1a1a',
+                                 activebackground='#1a1a1a')
+
+        self.chat_display.config(state='disabled')
+
+        # Нижняя панель информации
+        bottom_frame = tk.Frame(main_frame, bg=dark_bg, height=20)
+        bottom_frame.pack(fill=tk.X, pady=(5, 0))
+        bottom_frame.pack_propagate(False)
+
+        self.info_label = tk.Label(bottom_frame,
+                                   text=f"α:{int(self.current_alpha * 100)}% | F9:rec | AVI",
+                                   bg=dark_bg,
+                                   fg='#888888',
+                                   font=('Arial', 7))
+        self.info_label.pack(side=tk.LEFT)
+
+        self.message_count = tk.Label(bottom_frame,
+                                      text="Msgs: 0",
+                                      bg=dark_bg,
+                                      fg='#888888',
+                                      font=('Arial', 7))
+        self.message_count.pack(side=tk.RIGHT)
+
+        # Статус API
+        self.api_status = tk.Label(bottom_frame,
+                                   text="",
+                                   bg=dark_bg,
+                                   fg='#00ff00',
+                                   font=('Arial', 7))
+        self.api_status.pack(side=tk.RIGHT, padx=5)
+
+    def _create_user_checkboxes(self):
+        """Создание чекбоксов для выбора пользователей"""
+        # Очищаем старые чекбоксы
+        for widget in self.checkboxes_frame.winfo_children():
+            widget.destroy()
+
+        self.user_checkboxes = {}
+
+        # Создаем чекбоксы для каждого пользователя
+        for i, (name, chat_id) in enumerate(self.users_dict.items()):
+            var = tk.BooleanVar(value=self.selected_users.get(name, True))
+
+            checkbox = tk.Checkbutton(self.checkboxes_frame,
+                                      text=f"{name[:15]}...",
+                                      variable=var,
+                                      bg='#2b2b2b',
+                                      fg='#ffffff',
+                                      selectcolor='#1a1a1a',
+                                      activebackground='#2b2b2b',
+                                      activeforeground='#ffffff',
+                                      font=('Arial', 7),
+                                      command=lambda n=name, v=var: self._on_user_selection_change(n, v))
+
+            # Размещаем в две колонки
+            if i % 2 == 0:
+                checkbox.pack(side=tk.LEFT, padx=(0, 10))
+            else:
+                checkbox.pack(side=tk.LEFT)
+
+            self.user_checkboxes[name] = var
+
+    def _on_user_selection_change(self, username, var):
+        """Обработчик изменения выбора пользователя"""
+        self.selected_users[username] = var.get()
+        selected_count = sum(self.selected_users.values())
+        self.chat_header.config(text=f"💬 Telegram Chat [👥{selected_count}/{len(self.users_dict)}]")
+
+
+
+
+    def _update_chat_header(self):
+        """Обновление заголовка чата"""
+        selected_count = sum(self.selected_users.values())
+        self.chat_header.config(text=f"💬 Telegram Chat [👥{selected_count}/{len(self.users_dict)}]")
 
     def start_recording(self):
         try:
-            # Создаем временную папку для записи
             temp_dir = tempfile.gettempdir()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            # Записываем в AVI для лучшего качества
             self.output_file = os.path.join(temp_dir, f"record_{timestamp}.avi")
 
-            # Получаем размер экрана
             screen_width, screen_height = ImageGrab.grab().size
 
-            # Создаем VideoWriter
+            # Используем XVID кодек для AVI (лучшее качество)
             fourcc = cv2.VideoWriter_fourcc(*'XVID')
             self.video_writer = cv2.VideoWriter(
                 self.output_file,
                 fourcc,
-                30,  # FPS
+                30.0,  # Высокий FPS для плавности
                 (screen_width, screen_height)
             )
 
             self.recording = True
             self.start_time = time.time()
 
-            # Обновляем UI
             self.record_btn.config(state='disabled', bg='#555555')
             self.stop_btn.config(state='normal', bg='#00ff00')
             self.telegram_btn.config(state='disabled')
-            self.recording_status.config(text="🔴 Запись...", fg='#00ff00')
-            self.file_label.config(text=f"Файл: {os.path.basename(self.output_file)}")
+            self.status_label.config(text="🔴", fg='#00ff00')
 
-            # Запускаем поток записи
             self.recording_thread = threading.Thread(target=self.record_screen, daemon=True)
             self.recording_thread.start()
 
-            # Запускаем обновление таймера
-            self.update_timer()
+            self.add_message_to_chat("SYSTEM", "🎥 Запись начата (качество: AVI)")
 
         except Exception as e:
-            messagebox.showerror("Ошибка", f"Не удалось начать запись: {e}")
+            self.add_message_to_chat("SYSTEM", f"Ошибка записи: {e}")
+
+    def send_to_selected_users(self):
+        """Отправка видео выбранным пользователям"""
+        if not self.output_file or not os.path.exists(self.output_file):
+            self.add_message_to_chat("SYSTEM", "Нет файла для отправки")
+            return
+
+        # Получаем выбранных пользователей
+        selected_users = {name: chat_id for name, chat_id in self.users_dict.items()
+                          if self.selected_users.get(name, False)}
+
+        if not selected_users:
+            self.add_message_to_chat("SYSTEM", "❌ Не выбрано ни одного пользователя")
+            return
+
+        def send_to_selected_thread():
+            try:
+                self.telegram_btn.config(state='disabled', text="⏳")
+                total_users = len(selected_users)
+                successful_sends = 0
+
+                file_size = os.path.getsize(self.output_file) / (1024 * 1024)
+                self.add_message_to_chat("SYSTEM", f"📤 Отправка {total_users} пользователям ({file_size:.1f}MB AVI)...")
+
+                for i, (name, chat_id) in enumerate(selected_users.items(), 1):
+                    try:
+                        success = self._send_to_single_user(name, chat_id, i, total_users)
+                        if success:
+                            successful_sends += 1
+                    except Exception as e:
+                        self.add_message_to_chat("SYSTEM", f"❌ Ошибка для {name}: {str(e)[:30]}")
+
+                # Итоговый отчет
+                if successful_sends == total_users:
+                    self.add_message_to_chat("SYSTEM", f"✅ Успешно отправлено всем {total_users} пользователям")
+                else:
+                    self.add_message_to_chat("SYSTEM", f"📊 Отправлено {successful_sends}/{total_users} пользователям")
+
+                self.api_errors_count = 0
+
+            except Exception as e:
+                self.add_message_to_chat("SYSTEM", f"❌ Общая ошибка отправки: {str(e)[:50]}")
+                self.api_errors_count += 1
+            finally:
+                self.telegram_btn.config(state='normal', text="📤")
+                self._update_api_status()
+
+        threading.Thread(target=send_to_selected_thread, daemon=True).start()
+
+    def _send_to_single_user(self, name, chat_id, current_num, total_users):
+        """Отправка видео одному пользователю"""
+        url = f"https://api.telegram.org/bot{self.bot_token}/sendVideo"
+
+        caption = f'Запись экрана {datetime.now().strftime("%H:%M:%S")}'
+
+        with open(self.output_file, 'rb') as video_file:
+            files = {'video': video_file}
+            data = {
+                'chat_id': chat_id,
+                'caption': caption
+            }
+            response = requests.post(url, files=files, data=data, timeout=60)
+
+        if response.status_code == 200:
+            short_name = name.split()[0]  # Берем только имя
+            self.add_message_to_chat("BOT", f"✅ [{current_num}/{total_users}] {short_name}")
+            return True
+        else:
+            error_msg = self._parse_telegram_error(response)
+            short_name = name.split()[0]
+            self.add_message_to_chat("BOT", f"❌ [{current_num}/{total_users}] {short_name}: {error_msg}")
+            return False
+
+    # Остальные методы остаются без изменений
+    def toggle_transparency(self):
+        if self.current_alpha == 0.05:
+            self.current_alpha = 0.3
+            self.alpha_btn.config(text="🔵")
+        elif self.current_alpha == 0.3:
+            self.current_alpha = 0.7
+            self.alpha_btn.config(text="🔘")
+        else:
+            self.current_alpha = 0.05
+            self.alpha_btn.config(text="⚪")
+
+        self.root.attributes('-alpha', self.current_alpha)
+        self.info_label.config(text=f"α:{int(self.current_alpha * 100)}% | F9:rec | AVI")
+
+    def setup_bindings(self):
+        self.root.bind('<F9>', lambda e: self.toggle_recording())
+        self.root.bind('<Control-plus>', lambda e: self.more_transparent())
+        self.root.bind('<Control-minus>', lambda e: self.less_transparent())
+
+        self.chat_display.bind("<MouseWheel>", self._on_mousewheel)
+        self.chat_display.bind("<Button-4>", self._on_mousewheel)
+        self.chat_display.bind("<Button-5>", self._on_mousewheel)
+
+    def _on_mousewheel(self, event):
+        if event.delta:
+            self.chat_display.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        else:
+            if event.num == 4:
+                self.chat_display.yview_scroll(-1, "units")
+            elif event.num == 5:
+                self.chat_display.yview_scroll(1, "units")
+
+    def more_transparent(self):
+        if self.current_alpha > 0.05:
+            self.current_alpha -= 0.05
+            self.root.attributes('-alpha', self.current_alpha)
+            self.info_label.config(text=f"α:{int(self.current_alpha * 100)}% | F9:rec | AVI")
+
+    def less_transparent(self):
+        if self.current_alpha < 1.0:
+            self.current_alpha += 0.05
+            self.root.attributes('-alpha', self.current_alpha)
+            self.info_label.config(text=f"α:{int(self.current_alpha * 100)}% | F9:rec | AVI")
+
+    def toggle_recording(self):
+        if not self.recording:
+            self.start_recording()
+        else:
+            self.stop_recording()
 
     def stop_recording(self):
         self.recording = False
@@ -238,76 +431,140 @@ class ScreenRecorder:
             self.video_writer.release()
             self.video_writer = None
 
-        # Обновляем UI
         self.record_btn.config(state='normal', bg='#ff5555')
         self.stop_btn.config(state='disabled', bg='#555555')
         self.telegram_btn.config(state='normal', bg='#0088cc')
-        self.recording_status.config(text="⏹️ Запись остановлена", fg='#ff5555')
-        # self.time_label.config(text="Время записи: 00:00:00")
+        self.status_label.config(text="⏹️", fg='#ff5555')
+
+        duration = int(time.time() - self.start_time)
+        self.add_message_to_chat("SYSTEM", f"⏹️ Запись остановлена ({duration} сек)")
 
     def record_screen(self):
         while self.recording:
             try:
-                # Захватываем скриншот
                 screenshot = ImageGrab.grab()
                 frame = cv2.cvtColor(np.array(screenshot), cv2.COLOR_RGB2BGR)
 
-                # Записываем кадр
                 if self.video_writer:
                     self.video_writer.write(frame)
 
-                # Небольшая задержка для контроля FPS
                 time.sleep(1 / 30)
 
             except Exception as e:
-                print(f"Ошибка записи: {e}")
+                self.add_message_to_chat("SYSTEM", f"Ошибка записи: {e}")
                 break
 
-    def update_timer(self):
-        if self.recording:
-            elapsed = int(time.time() - self.start_time)
-            hours = elapsed // 3600
-            minutes = (elapsed % 3600) // 60
-            seconds = elapsed % 60
-            self.time_label.config(text=f"Время записи: {hours:02d}:{minutes:02d}:{seconds:02d}")
-            self.root.after(1000, self.update_timer)
+    def get_telegram_updates(self):
+        try:
+            url = f"https://api.telegram.org/bot{self.bot_token}/getUpdates"
+            params = {
+                'timeout': 20,
+                'offset': self.last_update_id + 1,
+                'limit': 10
+            }
 
-    def send_to_telegram(self):
-        if not self.output_file or not os.path.exists(self.output_file):
-            messagebox.showwarning("Предупреждение", "Нет файла для отправки")
-            return
+            response = requests.get(url, params=params, timeout=25)
 
-        if self.bot_token == "YOUR_BOT_TOKEN_HERE" or self.chat_id == "YOUR_CHAT_ID_HERE":
-            messagebox.showwarning("Настройка", "Сначала настройте токен бота и chat ID!")
-            return
-
-        def send_thread():
-            try:
-                # Обновляем UI
-                self.telegram_btn.config(state='disabled', text="📤 Отправка...")
-
-                # Отправка файла в Telegram
-                url = f"https://api.telegram.org/bot{self.bot_token}/sendVideo"
-
-                with open(self.output_file, 'rb') as video_file:
-                    files = {'video': video_file}
-                    data = {'chat_id': self.chat_id}
-                    response = requests.post(url, files=files, data=data)
-
-                if response.status_code == 200:
-                    messagebox.showinfo("Успех", "Видео отправлено в Telegram!")
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('ok'):
+                    if data['result']:
+                        for update in data['result']:
+                            self.last_update_id = update['update_id']
+                            if 'message' in update:
+                                msg = update['message']
+                                user = msg['from'].get('first_name', 'Unknown')
+                                text = msg.get('text', '')
+                                if text:
+                                    self.add_message_to_chat(user, text)
+                    self.api_errors_count = 0
                 else:
-                    messagebox.showerror("Ошибка", f"Не удалось отправить: {response.text}")
+                    self._handle_api_error(f"API error: {data.get('description', 'Unknown')}")
+            else:
+                self._handle_api_error(f"HTTP {response.status_code}")
 
-            except Exception as e:
-                messagebox.showerror("Ошибка", f"Ошибка отправки: {e}")
-            finally:
-                # Восстанавливаем UI
-                self.root.after(0, lambda: self.telegram_btn.config(
-                    state='normal', text="📤 В Telegram"))
+        except requests.exceptions.Timeout:
+            pass
+        except requests.exceptions.ConnectionError:
+            self._handle_api_error("Connection error")
+        except requests.exceptions.RequestException as e:
+            self._handle_api_error(f"Network error: {str(e)[:30]}")
+        except Exception as e:
+            self._handle_api_error(f"Unexpected error: {str(e)[:30]}")
 
-        # Запускаем в отдельном потоке
-        threading.Thread(target=send_thread, daemon=True).start()
+        self._update_api_status()
+
+    def _handle_api_error(self, error_msg):
+        self.api_errors_count += 1
+
+        if self.api_errors_count >= 3:
+            self.root.after(0, lambda: self._show_api_error_in_chat(error_msg))
+
+        if self.api_errors_count > self.max_api_errors:
+            time.sleep(10)
+
+    def _show_api_error_in_chat(self, error_msg):
+        last_messages = self.messages[-3:] if self.messages else []
+        error_shown = any("API Error" in msg for msg in last_messages)
+
+        if not error_shown:
+            self.add_message_to_chat("SYSTEM", f"API Error: {error_msg}")
+
+    def _update_api_status(self):
+        status_color = '#00ff00' if self.api_errors_count == 0 else '#ff5555'
+        status_text = "✓" if self.api_errors_count == 0 else f"⚠{self.api_errors_count}"
+
+        self.api_status.config(text=status_text, fg=status_color)
+
+    def _parse_telegram_error(self, response):
+        try:
+            error_data = response.json()
+            if not error_data.get('ok'):
+                description = error_data.get('description', 'Unknown error')
+                if "bot was blocked" in description.lower():
+                    return "Бот заблокирован"
+                elif "chat not found" in description.lower():
+                    return "Чат не найден"
+                elif "too large" in description.lower():
+                    return "Файл слишком большой"
+                else:
+                    return f"API: {description[:40]}"
+        except:
+            pass
+        return f"HTTP {response.status_code}"
+
+    def start_message_polling(self):
+        def poll():
+            while True:
+                self.get_telegram_updates()
+
+                if self.api_errors_count == 0:
+                    time.sleep(2)
+                elif self.api_errors_count <= 2:
+                    time.sleep(5)
+                else:
+                    time.sleep(10)
+
+        threading.Thread(target=poll, daemon=True).start()
+
+    def add_message_to_chat(self, user, message):
+        timestamp = datetime.now().strftime("%H:%M:%S")
+
+        if len(message) > 50:
+            message = message[:47] + "..."
+
+        formatted_message = f"[{timestamp}] {user}: {message}\n"
+
+        self.chat_display.config(state='normal')
+        self.chat_display.insert('end', formatted_message)
+        self.chat_display.see('end')
+        self.chat_display.config(state='disabled')
+
+        self.messages.append(formatted_message)
+        if len(self.messages) > 100:
+            self.messages = self.messages[-100:]
+
+        self.message_count.config(text=f"Msgs: {len(self.messages)}")
 
 
 if __name__ == "__main__":
